@@ -1,0 +1,5 @@
+mss>=10.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+rapidocr-onnxruntime>=1.2.0
+zhconv>=1.4.0
