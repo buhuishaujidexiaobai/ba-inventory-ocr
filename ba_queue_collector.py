@@ -30,18 +30,30 @@ from rapidocr_onnxruntime import RapidOCR
 
 # DirectML GPU 加速适配（若检测到 DirectML 则自动启用显卡推理）
 HAS_DML = "DmlExecutionProvider" in ort.get_available_providers()
-DML_LOCK = threading.Lock()
-if HAS_DML:
+
+def make_engine(use_dml=False):
+    """构建独立 RapidOCR 引擎：主线程走 CPU（防 DirectX 争用），消费线程走 GPU（极速推理）"""
+    sess_opt = ort.SessionOptions()
+    sess_opt.log_severity_level = 4
+    sess_opt.enable_cpu_mem_arena = False
+    sess_opt.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+    ep_list = []
+    if use_dml and HAS_DML:
+        ep_list.append(("DmlExecutionProvider", {"device_id": 0}))
+    ep_list.append(("CPUExecutionProvider", {}))
+
     _orig_init = r_utils.OrtInferSession.__init__
-    def _dml_init(self, config):
-        sess_opt = ort.SessionOptions()
-        sess_opt.log_severity_level = 4
-        sess_opt.enable_cpu_mem_arena = False
-        sess_opt.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        ep_list = [("DmlExecutionProvider", {"device_id": 0}), ("CPUExecutionProvider", {})]
+    def _custom_init(self, config):
         self._verify_model(config["model_path"])
         self.session = ort.InferenceSession(config["model_path"], sess_options=sess_opt, providers=ep_list)
-    r_utils.OrtInferSession.__init__ = _dml_init
+    r_utils.OrtInferSession.__init__ = _custom_init
+
+    eng = RapidOCR()
+    r_utils.OrtInferSession.__init__ = _orig_init
+    return eng
+
+if HAS_DML:
     print("[GPU] DirectML 加速已激活 (DirectX 12 / NVIDIA RTX)", flush=True)
 else:
     print("[CPU] 未检测到 DirectML 支持，使用默认 CPU 模式", flush=True)
@@ -49,7 +61,7 @@ else:
 user32 = ctypes.windll.user32
 SCT = mss.mss()
 SCT_LOCK = threading.Lock()
-ENGINE = RapidOCR()                  # 主线程（自标定 + 每屏行检测用）
+ENGINE = make_engine(use_dml=False)  # 主线程（自标定 + 每屏行检测用 CPU，杜绝显卡争用）
 
 TEMP = os.path.dirname(os.path.abspath(__file__))
 ROWS_OUT = os.path.join(TEMP, "rows2.json")
@@ -328,19 +340,13 @@ def main():
 
     q = queue.Queue(maxsize=200)
 
-    # DirectML 模式下使用全局 Session 配合互斥锁，避免多线程同时并发录制 DirectX 命令队列
-    SHARED_CONSUMER_ENGINE = RapidOCR() if HAS_DML else None
+    # 消费端使用专用 GPU DirectML 引擎（未启用 DML 则自动降级 CPU）
+    consumer_engine = make_engine(use_dml=True)
 
     def consumer():
-        engine = SHARED_CONSUMER_ENGINE if HAS_DML else RapidOCR()
-
         def ocr_png(png_bytes):
             arr = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if HAS_DML:
-                with DML_LOCK:
-                    res, _ = engine(arr)
-            else:
-                res, _ = engine(arr)
+            res, _ = consumer_engine(arr)
             lines = []
             if res:
                 for it in res:
@@ -368,7 +374,9 @@ def main():
                         rows.append(row)
             q.task_done()
 
-    consumers = [threading.Thread(target=consumer, daemon=True) for _ in range(2)]
+    # GPU 模式下单专职线程独占显卡带宽吞吐更高且无争用；CPU 模式起 2 线程发挥多核优势
+    num_consumers = 1 if HAS_DML else 2
+    consumers = [threading.Thread(target=consumer, daemon=True) for _ in range(num_consumers)]
     for t in consumers:
         t.start()
 
@@ -450,7 +458,7 @@ def main():
         fast_wheel(-SCROLL_NOTCHES, gcx, gcy)
         time.sleep(0.55)
 
-    for _ in range(2):
+    for _ in range(len(consumers)):
         q.put(None)
     for t in consumers:
         t.join(timeout=120)
