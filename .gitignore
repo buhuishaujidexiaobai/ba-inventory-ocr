@@ -1,0 +1,16 @@
+# 个人游戏数据（不入库）
+rows2.json
+rows2_*.json
+待复核_*.json
+ambiguous.json
+
+# 图标匹配实验的素材（9.9MB，可从 cdn.arona.icu/schaledb 重新下载）
+icons/
+
+# 诊断与输出
+diag_*.png
+输出/
+
+# Python
+__pycache__/
+*.pyc
