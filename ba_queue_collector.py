@@ -24,7 +24,27 @@ import mss
 
 import cv2
 import numpy as np
+import onnxruntime as ort
+import rapidocr_onnxruntime.utils as r_utils
 from rapidocr_onnxruntime import RapidOCR
+
+# DirectML GPU 加速适配（若检测到 DirectML 则自动启用显卡推理）
+HAS_DML = "DmlExecutionProvider" in ort.get_available_providers()
+DML_LOCK = threading.Lock()
+if HAS_DML:
+    _orig_init = r_utils.OrtInferSession.__init__
+    def _dml_init(self, config):
+        sess_opt = ort.SessionOptions()
+        sess_opt.log_severity_level = 4
+        sess_opt.enable_cpu_mem_arena = False
+        sess_opt.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        ep_list = [("DmlExecutionProvider", {"device_id": 0}), ("CPUExecutionProvider", {})]
+        self._verify_model(config["model_path"])
+        self.session = ort.InferenceSession(config["model_path"], sess_options=sess_opt, providers=ep_list)
+    r_utils.OrtInferSession.__init__ = _dml_init
+    print("[GPU] DirectML 加速已激活 (DirectX 12 / NVIDIA RTX)", flush=True)
+else:
+    print("[CPU] 未检测到 DirectML 支持，使用默认 CPU 模式", flush=True)
 
 user32 = ctypes.windll.user32
 SCT = mss.mss()
@@ -306,14 +326,21 @@ def main():
     rows_lock = threading.Lock()
     print(f"resume: rows2.json 已有 {len(rows)} 行", flush=True)
 
-    q = queue.Queue(maxsize=80)
+    q = queue.Queue(maxsize=200)
+
+    # DirectML 模式下使用全局 Session 配合互斥锁，避免多线程同时并发录制 DirectX 命令队列
+    SHARED_CONSUMER_ENGINE = RapidOCR() if HAS_DML else None
 
     def consumer():
-        engine = RapidOCR()   # 消费者线程本地引擎
+        engine = SHARED_CONSUMER_ENGINE if HAS_DML else RapidOCR()
 
         def ocr_png(png_bytes):
             arr = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
-            res, _ = engine(arr)
+            if HAS_DML:
+                with DML_LOCK:
+                    res, _ = engine(arr)
+            else:
+                res, _ = engine(arr)
             lines = []
             if res:
                 for it in res:
