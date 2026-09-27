@@ -55,28 +55,26 @@
 
 ---
 
-## 🛠️ 环境准备与安装
+## 🛠️ 获取与运行方式
 
-### 1. 系统要求
-- 操作系统：Windows 10 / 11
-- 运行环境：Python 3.10+
-- 游戏环境：《蔚蓝档案》PC 客户端（或以 `BlueArchive` 进程名运行的官方客户端/模拟器）
+### 方式一：免安装便携版（推荐·解压即用）
+如果您不想在电脑上配置 Python 环境，可以直接使用预打包的完整便携版：
+1. 前往本仓库的 [Releases 发行版页面](https://github.com/buhuishaujidexiaobai/ba-inventory-ocr/releases)；
+2. 下载最新的 `ba-inventory-ocr-v1.0-portable.zip`（内嵌完整依赖与轻量 Python 运行环境）；
+3. 解压到任意目录；
+4. 直接按下方使用说明双击运行即可，无需额外安装任何软件。
 
-### 2. 克隆仓库与安装依赖
-打开终端（PowerShell 或 CMD）：
+### 方式二：源码运行版（适合开发者）
+- **系统要求**：Windows 10 / 11、Python 3.10+
+- **安装依赖**：
+  ```bash
+  # 克隆本仓库
+  git clone https://github.com/buhuishaujidexiaobai/ba-inventory-ocr.git
+  cd ba-inventory-ocr
 
-```bash
-# 1. 克隆本仓库
-git clone https://github.com/buhuishaujidexiaobai/ba-inventory-ocr.git
-cd ba-inventory-ocr
-
-# 2. （推荐）创建并激活虚拟环境
-python -m venv .venv
-.venv\Scripts\activate
-
-# 3. 安装依赖项
-pip install -r requirements.txt
-```
+  # 安装依赖项
+  pip install -r requirements.txt
+  ```
 
 ---
 
