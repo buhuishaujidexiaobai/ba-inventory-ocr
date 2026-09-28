@@ -404,6 +404,7 @@ def main():
         return
     s = geo["s"]
     cols = geo["cols"]
+    row_spacing = geo["row_spacing"]
     gcx, gcy = geo["gcx"], geo["gcy"]
     # 名称条带按游戏窗口底部锚定 + UI 缩放重算（窗口相对坐标）
     # （全屏 2560x1600、s=1 时等价于旧固定值 (0,1050,1300,1450)；窗口化/其他分辨率自适应）
@@ -498,6 +499,21 @@ def main():
     quiet = 0
     empty_screens = 0
 
+    def click_cell(cx, cy):
+        """点击一格并按条带哈希去重入队。返回 True=新条带入队。"""
+        fast_click(cx, cy)
+        time.sleep(CLICK_SLEEP)
+        with SCT_LOCK:
+            wide_img = grab_bgr(WIDE)
+        h = strip_hash(wide_img)
+        if any(float(np.mean(np.abs(h.astype(np.int16) - p.astype(np.int16)))) < HASH_THRESH
+               for p in hash_hist):
+            return False                 # 空格/重复条带：不入队
+        hash_hist.append(h)
+        ok_png, png = cv2.imencode(".png", wide_img)
+        q.put(png.tobytes())
+        return True
+
     for screen in range(1, MAX_SCREENS + 1):
         t0 = time.time()
         with SCT_LOCK:
@@ -512,19 +528,10 @@ def main():
         clicked = skipped = 0
         for ry in row_ys:                       # 行优先
             for cx in cols:
-                fast_click(cx, ry)
-                time.sleep(CLICK_SLEEP)
-                with SCT_LOCK:
-                    wide_img = grab_bgr(WIDE)
-                h = strip_hash(wide_img)
-                if any(float(np.mean(np.abs(h.astype(np.int16) - p.astype(np.int16)))) < HASH_THRESH
-                       for p in hash_hist):
+                if click_cell(cx, ry):
+                    clicked += 1
+                else:
                     skipped += 1
-                    continue                     # 空格/重复条带：不入队
-                hash_hist.append(h)
-                ok_png, png = cv2.imencode(".png", wide_img)
-                q.put(png.tobytes())
-                clicked += 1
         print(f"screen {screen}: rows_detected={len(row_ys)} badges={len(badges)} "
               f"new_strips={clicked} dup={skipped} ({time.time()-t0:.1f}s) rows={len(rows)}",
               flush=True)
@@ -559,6 +566,22 @@ def main():
             print(f"bottom reached (no badges x{empty_screens}, rows={len(rows)})",
                   flush=True)
             break
+        # ===== 末行投影探测（防角标系统性误读）=====
+        # 个别缩写角标（如 x10K）会被 RapidOCR 稳定误读（0→O 等），导致真实的
+        # 最后一行永远不成行。疑似到底（quiet≥1）时向下投影一行并整行点击：
+        # 最后一格的身份由面板内容确认（面板显示完整数量，精度还高于角标缩写），
+        # 不依赖其角标可读性；空格子点击无副作用（面板不变 → 条带 dup 跳过）。
+        if quiet >= 1 and row_ys:
+            probe_y = max(row_ys) + row_spacing
+            if probe_y < (WIN[3] - WIN[1]) - 10:     # 投影行须仍在游戏窗口内
+                p_new = p_dup = 0
+                for cx in cols:
+                    if click_cell(cx, probe_y):
+                        p_new += 1
+                    else:
+                        p_dup += 1
+                print(f"  probe row y={probe_y:.0f}: new={p_new} dup={p_dup}",
+                      flush=True)
         fast_wheel(-SCROLL_NOTCHES, gcx, gcy)
         time.sleep(0.55)
 
