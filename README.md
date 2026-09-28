@@ -32,7 +32,7 @@
 - 游戏内道具、欧帕兹、技能书、光盘及装备设计图总数高达数百种；
 - 每次活动或版本更迭后，手动逐一盘点并在网页端输入往往需要花费半小时以上，且极易输错漏填。
 
-**BA Inventory OCR** 通过屏幕自动化与点阵式 OCR，在 **3 ~ 5 分钟内**全自动完成所有道具及设计图的扫描与数量统计，并智能映射到 SchaleDB 道具数据库 ID，生成标准导入 JSON。
+**BA Inventory OCR** 通过屏幕自动化与点阵式 OCR，在 **3 ~ 6 分钟内**全自动完成所有道具及设计图的扫描与数量统计，并智能映射到 SchaleDB 道具数据库 ID，生成标准导入 JSON。
 
 ---
 
@@ -42,7 +42,7 @@
   - 纯前端 UI 模拟与本地离线截图识别，**不注入内存**、**不篡改客户端**、**不修改网络通信**。
   - *(注：港澳台服通信采用客户端生成会话密钥并通过 RSA-4096 公钥加密上报，网络被动解密在密码学上不可行且有封号风险；本工具采用纯视觉路线，稳妥无封号风险。)*
 - ⚡ **异步队列引擎（v10 架构）**：
-  - **自适应点阵标定**：自动根据角标位置（`x数量`）聚类推算行列间距与缩放比，自适应各种显示缩放与分辨率。
+  - **自适应点阵标定**：自动根据角标位置（`x数量`）聚类推算行列间距与缩放比；截图与名称识别区域均锚定游戏窗口矩形，支持窗口化与不同分辨率/缩放。
   - **生产者-消费者并行**：主线程负责极速点击与页面滚动，后台双线程并发运行 RapidOCR 识别，大幅缩短采集时间。
   - **条带哈希去重**：自动跳过空格子与重叠条带，避免冗余识别。
   - **智能到底判定**：自动识别列表底部与回弹，扫描完毕自动安全停机。
@@ -60,13 +60,13 @@
 ### 方式一：免安装便携版（推荐·解压即用）
 如果您不想在电脑上配置 Python 环境，可以直接使用预打包的完整便携版：
 1. 前往本仓库的 [Releases 发行版页面](https://github.com/buhuishaujidexiaobai/ba-inventory-ocr/releases)；
-2. 下载最新的 `ba-inventory-ocr-v1.0.1-portable.zip`（内嵌完整依赖与轻量 Python 运行环境，支持 GPU 硬件加速）；
+2. 下载最新的 `ba-inventory-ocr-v1.0.2-portable.zip`（内嵌完整依赖与轻量 Python 运行环境，支持 GPU 硬件加速）；
 3. 解压到任意目录；
 4. 直接按下方使用说明双击运行即可，无需额外安装任何软件。
 
 ### 方式二：源码运行版（适合开发者）
 - **系统要求**：Windows 10 / 11、Python 3.10+
-- **安装依赖**：
+- **安装依赖**（requirements.txt 为实测锁定版本）：
   ```bash
   # 克隆本仓库
   git clone https://github.com/buhuishaujidexiaobai/ba-inventory-ocr.git
@@ -74,6 +74,15 @@
 
   # 安装依赖项
   pip install -r requirements.txt
+  ```
+- **GPU 加速（可选）**：默认 CPU 版即可运行；想启用 DirectML 显卡推理，需与 CPU 版二选一：
+  ```bash
+  pip uninstall onnxruntime
+  pip install onnxruntime-directml==1.24.4
+  ```
+- **回归测试**（可选，不需要游戏窗口）：
+  ```bash
+  python -m unittest discover -s tests -v
   ```
 
 ---
@@ -89,8 +98,10 @@
 - **方式 A（推荐）**：直接双击运行仓库根目录下的 **`采集.bat`**。
 - **方式 B（命令行）**：在终端运行：
   ```bash
-  python ba_queue_collector.py collect
+  python ba_queue_collector.py          # 断点续采（保留上次数据）
+  python ba_queue_collector.py --fresh  # 清空重扫（旧数据自动备份为 rows2_backup_*.json）
   ```
+- 每次运行的控制台输出会同步写入根目录的 **`采集日志.txt`**，采集异常时可回溯定位。
 
 > ⚠️ **重要注意事项**：
 > - 脚本会自动检测游戏窗口并置顶；
@@ -137,17 +148,22 @@
 
 ```text
 ba-inventory-ocr/
-├── cache/                     # SchaleDB 道具与装备离线元数据（自动维护）
+├── cache/                     # SchaleDB 道具与装备离线元数据（缺失时自动从 CDN 下载）
 │   ├── items.min.json         # 道具定义表
 │   └── equipment.min.json     # 装备/设计图定义表
-├── .gitignore                 # Git 忽略配置（忽略个人游戏快照与输出）
-├── requirements.txt           # Python 依赖包清单
+├── legacy/                    # 已归档的实验方案（图标匹配扫描器，主方案更稳）
+│   └── ba_icon_scanner.py
+├── tests/                     # 映射/解析逻辑回归测试（不需要游戏窗口）
+│   └── test_mapping.py
+├── .gitignore                 # Git 忽略配置（个人游戏数据与本机配置均不入库）
+├── requirements.txt           # Python 依赖清单（实测锁定版本）
 ├── 采集.bat                   # 一键运行采集脚本
+├── 2-生成什亭之匣导入文件.bat # 一键生成导入 JSON 并打开输出文件夹
 ├── ba_queue_collector.py      # 核心采集器（点阵巡航、多线程队列、RapidOCR）
 ├── ba_map_items.py            # 数据映射与转换器（繁简转换、别名纠错、导出 JSON）
-├── ba_ocr_collector.py        # 备用确定性采集器
-├── ba_equip_collector.py      # 装备采集辅助脚本
-├── ba_icon_scanner.py         # 图标匹配实验脚本
+├── local_python_path.txt      # 可选：本机 Python 解释器路径覆盖（不入库）
+├── recover_local.json         # 可选：个人人工校准数量（不入库，键为 item_<Id>）
+├── 采集日志.txt               # 每次采集的控制台日志（自动生成，不入库）
 └── README.md                  # 项目说明文档
 ```
 

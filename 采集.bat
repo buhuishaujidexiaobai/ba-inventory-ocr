@@ -9,12 +9,12 @@ echo  采集期间不要动鼠标键盘，约 3-6 分钟
 echo ============================================
 
 set PY_CMD=python
-if exist "runtime\python.exe" set PY_CMD="runtime\python.exe"
-if exist "D:\AI工作区\工具\本地识图OCR\ocr-venv\Scripts\python.exe" set PY_CMD="D:\AI工作区\工具\本地识图OCR\ocr-venv\Scripts\python.exe"
-if exist ".venv\Scripts\python.exe" set PY_CMD=".venv\Scripts\python.exe"
-if exist "venv\Scripts\python.exe" set PY_CMD="venv\Scripts\python.exe"
+if exist "runtime\python.exe" set PY_CMD=runtime\python.exe
+if exist ".venv\Scripts\python.exe" set PY_CMD=.venv\Scripts\python.exe
+if exist "venv\Scripts\python.exe" set PY_CMD=venv\Scripts\python.exe
+if exist "local_python_path.txt" set /p PY_CMD=<local_python_path.txt
 
-%PY_CMD% -u ba_queue_collector.py collect
+"%PY_CMD%" -u ba_queue_collector.py
 echo.
 echo ============================================
 echo  采集完成！下一步：

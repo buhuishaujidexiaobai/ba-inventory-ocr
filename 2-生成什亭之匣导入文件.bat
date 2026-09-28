@@ -9,12 +9,12 @@ echo ========================================================
 echo.
 
 set PY_CMD=python
-if exist "runtime\python.exe" set PY_CMD="runtime\python.exe"
-if exist "D:\AI工作区\工具\本地识图OCR\ocr-venv\Scripts\python.exe" set PY_CMD="D:\AI工作区\工具\本地识图OCR\ocr-venv\Scripts\python.exe"
-if exist ".venv\Scripts\python.exe" set PY_CMD=".venv\Scripts\python.exe"
-if exist "venv\Scripts\python.exe" set PY_CMD="venv\Scripts\python.exe"
+if exist "runtime\python.exe" set PY_CMD=runtime\python.exe
+if exist ".venv\Scripts\python.exe" set PY_CMD=.venv\Scripts\python.exe
+if exist "venv\Scripts\python.exe" set PY_CMD=venv\Scripts\python.exe
+if exist "local_python_path.txt" set /p PY_CMD=<local_python_path.txt
 
-%PY_CMD% ba_map_items.py
+"%PY_CMD%" ba_map_items.py
 echo.
 echo ========================================================
 echo  [√] 导入文件已生成完毕！
