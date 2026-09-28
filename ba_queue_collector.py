@@ -406,10 +406,12 @@ def main():
     cols = geo["cols"]
     row_spacing = geo["row_spacing"]
     gcx, gcy = geo["gcx"], geo["gcy"]
-    # 名称条带按游戏窗口底部锚定 + UI 缩放重算（窗口相对坐标）
-    # （全屏 2560x1600、s=1 时等价于旧固定值 (0,1050,1300,1450)；窗口化/其他分辨率自适应）
+    # 名称条带按游戏窗口底部锚定（窗口相对坐标）。右界不随 s 缩放——面板文本位置
+    # 基本不随网格缩放系数走，s<1 时 1300*s 会把持有数量第 4 位起的数字裁掉
+    # （实测 5469→546、10686→106，且截断读数稳定复现，会在众数投票中压过正确值）。
+    # 右界取网格首列角标文本左侧：既覆盖数量文本，又不把首列角标卷进条带。
     wh = WIN[3] - WIN[1]
-    WIDE = (0.0, wh - 550.0 * s, 1300.0 * s, wh - 150.0 * s)
+    WIDE = (0.0, wh - 550.0 * s, cols[0] - 0.45 * geo["spacing"], wh - 150.0 * s)
     print(f"autocalib: s={s:.3f} cols={len(cols)} col_step={geo['spacing']:.0f} "
           f"row_step={geo['row_spacing']:.0f} wheel=({gcx},{gcy}) "
           f"panel=({WIDE[0]:.0f},{WIDE[1]:.0f},{WIDE[2]:.0f},{WIDE[3]:.0f})", flush=True)
