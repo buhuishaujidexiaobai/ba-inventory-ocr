@@ -216,7 +216,8 @@ def autocalib():
 def detect_rows(grid, geo):
     """每屏行检测：角标 cy 聚类 → 行中心列表（点击 y = 角标 cy 均值 - 56*s）。
     - 角标整行漏检时用 row_spacing 插值补行（识别只影响行发现，不影响点击正确性）
-    - 行 y 钳制在自标定网格包围盒内，防止顶部 UI 的伪角标把点击引到設定等按钮上
+    - 行 y 钳制：y_lo 防顶部 UI 伪角标把点击引到設定等按钮；y_hi 放宽 0.8 行距以容纳
+      autocalib 未计入的末行（半遮挡/单物品行不进 grid_bbox，见下方钳制处注释）
     - 同时检测弹窗关键词（≥2 命中 = 弹窗打开）
     返回 (row_ys, badges, dialog_open)"""
     s = geo["s"]
@@ -263,11 +264,12 @@ def detect_rows(grid, geo):
             for k in range(1, n_missing + 1):
                 filled.append(rows[i - 1] + row_step * k)
         filled.append(ry)
-    # 行 y 钳制：上界 = 清单表头（搜尋/篩選/基本/☰ 按钮带）下缘。
-    # 列表顶部第一个完整行的点击位置 = (461-56)*s ≈ 405*s；表头按钮带向下延伸 ~105px*s，
-    # 被表头遮住的"半行"（角标可见但格子在按钮带下面）绝不可点——点了会开顯示設定弹窗。
+    # 行 y 钳制：上界防顶部 UI 伪角标把点击引到表头；下界 y_hi 放宽 0.8 个行距——
+    # autocalib 对"不足 3 角标的行"（半遮挡的第 6 行、只有 1 个物品的末行）不计入
+    # grid_bbox，导致真实末行的点击 y 超出旧钳制被整行裁掉（实测：垫底的 x10K
+    # 万能設計圖因此从未被点击）。放宽后多出的行仍须有真实角标才会生成，无幻行风险。
     y_lo = 300.0 * s
-    y_hi = geo["grid_bbox"][3]
+    y_hi = geo["grid_bbox"][3] + row_step * 0.8
     filled = [ry for ry in filled if y_lo <= ry <= y_hi]
     return filled, badges, dialog_open
 
