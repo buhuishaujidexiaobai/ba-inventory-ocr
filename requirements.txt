@@ -1,5 +1,12 @@
-mss>=10.0.0
-opencv-python>=4.8.0
-numpy>=1.24.0
-rapidocr-onnxruntime>=1.2.0
-zhconv>=1.4.0
+# 采集与映射依赖（== 为实测锁定版本；升级 rapidocr 可能破坏引擎的会话注入逻辑，升级前请自行验证）
+mss==10.2.0
+numpy==2.5.1
+opencv-python==5.0.0.93
+rapidocr-onnxruntime==1.2.3
+onnxruntime==1.24.4
+zhconv==1.4.3
+
+# GPU 加速（可选）：默认 CPU 版即可运行，采集器会自动回退 CPU 模式。
+# 启用 DirectML 显卡推理需与 CPU 版二选一：
+#   pip uninstall onnxruntime
+#   pip install onnxruntime-directml==1.24.4

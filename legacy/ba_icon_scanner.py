@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """图标识别扫描器 v6（自适应版）：零点击。角标 OCR 定位+计数，图标查库定身份。
+【已归档】实验性方案，主方案见根目录 ba_queue_collector.py（OCR 名称路线）。
 自适应：启动时全屏扫角标，自动推算网格几何（支持全屏/窗口任意大小位置）。
 用法:
     python ba_icon_scanner.py calib   # 单屏验证：每格 top2 匹配 + 站点库存对照
@@ -23,7 +24,8 @@ user32 = ctypes.windll.user32
 SCT = mss.mss()
 ENGINE = RapidOCR()
 
-TEMP = os.path.dirname(os.path.abspath(__file__))
+# 脚本已移入 legacy/：资产路径（icons/、cache/、输出 json）仍指向项目根目录
+TEMP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICONS_DIR = os.path.join(TEMP, "icons")
 ITEMS_JSON = os.path.join(TEMP, "cache", "items.min.json")
 EQUIP_JSON = os.path.join(TEMP, "cache", "equipment.min.json")
@@ -106,18 +108,9 @@ def autocalib():
     cell_w = float(np.median(col_d))
     cell_h = float(np.median(row_d))
 
-    def cluster2(vals, gap):
-        vals = sorted(vals)
-        groups = [[vals[0]]]
-        for v in vals[1:]:
-            if v - groups[-1][-1] <= gap:
-                groups[-1].append(v)
-            else:
-                groups.append([v])
-        return [sum(g) / len(g) for g in groups]
-
-    col_c = cluster2(cxs, cell_w * 0.5)
-    row_c = cluster2(cys, cell_h * 0.5)
+    # 精确聚类：列/行中心（cxs/cys 已排序，直接复用 cluster）
+    col_c = cluster(cxs, cell_w * 0.5)
+    row_c = cluster(cys, cell_h * 0.5)
     if len(col_c) < 3 or len(row_c) < 2:
         return False
 
