@@ -84,6 +84,41 @@ class TestParseWide(unittest.TestCase):
         name, _ = self.parse([("小字描述", 14), ("真正的名字", 44), ("x3", 18)])
         self.assertEqual(name, "真正的名字")
 
+    def test_count_k_abbr(self):
+        # 游戏对 ≥10000 的数量在角标和面板都可能缩写为 10K
+        name, count = self.parse([("鞋萬能設計圖", 40), ("x10K", 20)])
+        self.assertEqual((name, count), ("鞋萬能設計圖", 10000))
+
+    def test_count_decimal_requires_suffix(self):
+        # 千分位逗号被 OCR 误读成小数点时（x1.234）必须判为非数量行，而不是解析成 1
+        name, count = self.parse([("某物品", 40), ("x1.234", 20)])
+        self.assertEqual((name, count), ("某物品", None))
+
+
+class TestBadgeRegex(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from ba_queue_collector import BADGE_RE, badge_value
+        cls.badge_re = BADGE_RE
+        cls.val = staticmethod(badge_value)
+
+    def test_plain_numbers(self):
+        self.assertEqual(self.val(self.badge_re.fullmatch("x792")), 792)
+        self.assertEqual(self.val(self.badge_re.fullmatch("x1,234")), 1234)
+        self.assertEqual(self.val(self.badge_re.fullmatch("X12")), 12)
+
+    def test_k_abbr(self):
+        self.assertEqual(self.val(self.badge_re.fullmatch("x10K")), 10000)
+        self.assertEqual(self.val(self.badge_re.fullmatch("x1.2K")), 1200)
+        self.assertEqual(self.val(self.badge_re.fullmatch("x99k")), 99000)
+
+    def test_m_abbr(self):
+        self.assertEqual(self.val(self.badge_re.fullmatch("x1M")), 1000000)
+
+    def test_non_badges_rejected(self):
+        for t in ("48/240", "10K", "x10Kg", "x--", "持有數量", "2026-09-27"):
+            self.assertIsNone(self.badge_re.fullmatch(t), t)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

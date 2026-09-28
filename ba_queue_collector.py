@@ -5,7 +5,7 @@
   每屏点击目标 = cols × 行中心 全组合，行优先遍历，一格一次（不漏、不乱、不重）
 - 空格子无副作用：点击后左侧面板不变 → 条带与上一格相同 → 哈希去重跳过 OCR
 - 条带哈希去重：重叠行/空格重复条带不入队，消费者只 OCR 新内容
-- 到底判定：角标行位置集合不变 ×2，或解析行数连续 2 屏无新增
+- 到底判定：OCR 队列清空后连续 2 轮实际零新增行（对条带哈希抖动免疫），或连续 2 屏无角标
 - 滚轮：先 SetCursorPos 到网格质心，确保滚动作用于游戏列表
 - 名称条带与截图区域均锚定游戏窗口矩形（GetWindowRect），支持任意窗口位置/分辨率
 用法: python ba_queue_collector.py [--fresh]
@@ -75,7 +75,16 @@ ROWS_OUT = os.path.join(TEMP, "rows2.json")
 
 BASE_COL_SPACING = 239.0
 BASE_ROW_SPACING = 205.0
-BADGE_RE = re.compile(r"[xX×]\s*(\d[\d,]*)")
+# 角标：游戏对 ≥10000 的数量缩写为 10K/1.2K/1M；小数点仅在带 K/M 时合法
+# （防止 OCR 把千分位逗号误读成小数点，如 x1,234 → x1.234）
+BADGE_RE = re.compile(r"[xX×]\s*(\d[\d,]*)((?:\.\d+)?[KkMm])?")
+
+
+def badge_value(m):
+    """角标正则 match → 数量。K/M 缩写会截断末位（10K=10000~10049），仅用于行定位；
+    物品数量以面板读数（parse_wide）为准。"""
+    num = float(m.group(1).replace(",", ""))
+    return int(round(num * {"K": 1e3, "M": 1e6}.get((m.group(2) or "").upper(), 1)))
 CLICK_SLEEP = 0.03
 SCROLL_NOTCHES = 4                   # 实测 2 格 ≈ 2.2 行 → 4 格 ≈ 4.4 行（<5 行窗口）
 SKIP_EXACT = {"道具", "持有數量", "持有数量", "主能力值", "攻擊力", "攻击力"}
@@ -137,7 +146,7 @@ def xbadges(arr):
             continue
         xs = [q[0] for q in b["box"]]
         ys = [q[1] for q in b["box"]]
-        out.append((sum(xs) / 4, sum(ys) / 4, int(m.group(1).replace(",", ""))))
+        out.append((sum(xs) / 4, sum(ys) / 4, badge_value(m)))
     return out
 
 
@@ -219,7 +228,7 @@ def detect_rows(grid, geo):
             continue
         xs = [q[0] for q in b["box"]]
         ys = [q[1] for q in b["box"]]
-        badges.append((sum(xs) / 4, sum(ys) / 4, int(m.group(1).replace(",", ""))))
+        badges.append((sum(xs) / 4, sum(ys) / 4, badge_value(m)))
     dialog_open = dialog_hits >= 2
     if not badges:
         return [], [], dialog_open
@@ -234,6 +243,13 @@ def detect_rows(grid, geo):
     for g in groups:
         if len(g) >= 2:                      # 网格行至少 2 个角标（5 列漏 3 个仍可见）
             rows.append(sum(g) / len(g) - BADGE_CLICK_DY * s)
+    # 末行特例：排序列表垫底的行可能只有 1 个物品（如 x10K 万能設計圖）。
+    # 仅当单角标组位于所有多角标行下方（只可能是列表末行）时才采纳为行，
+    # 避免屏内散点误建行。cluster_vals 升序返回，singles[-1] 即最下方的单角标。
+    multi_cys = [sum(g) / len(g) for g in groups if len(g) >= 2]
+    singles = [g[0] for g in groups if len(g) == 1]
+    if singles and (not multi_cys or singles[-1] > max(multi_cys) + row_step * 0.25):
+        rows.append(singles[-1] - BADGE_CLICK_DY * s)
     # 插值补行：相邻行距 > 1.5 倍行距说明整行漏检
     filled = []
     for i, ry in enumerate(rows):
@@ -263,9 +279,10 @@ def parse_wide(lines):
     数量 = 最后一个独立数字行。"""
     count = None
     for text, _h in reversed(lines):
-        m = re.fullmatch(r"[xX×]?\s*(\d[\d,]*)", text)
+        m = re.fullmatch(r"[xX×]?\s*(\d[\d,]*)((?:\.\d+)?[KkMm])?", text)
         if m:
-            count = int(m.group(1).replace(",", ""))
+            num = float(m.group(1).replace(",", ""))
+            count = int(round(num * {"K": 1e3, "M": 1e6}.get((m.group(2) or "").upper(), 1)))
             break
 
     def has_cjk(t):
@@ -405,6 +422,8 @@ def main():
         with open(ROWS_OUT, "w", encoding="utf-8") as f:
             json.dump(snap, f, ensure_ascii=False)
 
+    new_rows_ct = [0]                  # 消费端实际新增行计数（到底判定用，对哈希抖动免疫）
+
     q = queue.Queue(maxsize=200)
 
     # 消费端使用专用 GPU DirectML 引擎（未启用 DML 则自动降级 CPU）
@@ -439,6 +458,7 @@ def main():
                     if row not in known:
                         known.add(row)
                         rows.append(row)
+                        new_rows_ct[0] += 1
             q.task_done()
 
     # GPU 模式下单专职线程独占显卡带宽吞吐更高且无争用；CPU 模式起 2 线程发挥多核优势
@@ -505,21 +525,34 @@ def main():
               flush=True)
         save_rows()
 
-        # ===== 到底判定 =====
-        # 安静屏判定：新条带 ≤3 连续 3 屏 = 到底（底部橡皮筋回弹导致同位置比对不可靠，
-        # 但到底后条带内容必然全部见过 → dup≈100%；中部滚动时每屏必有 ≥9 个新条带）
-        if clicked <= 3:
-            quiet += 1
-        else:
-            quiet = 0
+        # ===== 到底判定（消费端为准）=====
+        # 以"实际新增行数"计安静轮：底部重复扫到旧物品时，条带哈希可能因选中高亮/
+        # 回弹动画抖动而被再次入队，但 OCR 解析出的 (名称,数量) 必然已在 known 里
+        # → 不产生新行。只有 OCR 队列清空后才评估，避免把延迟到达的行误判为零新增。
+        # 连续 2 轮零新增 = 到底（用户实测建议，2026-09-28）。
+        if any(not t.is_alive() for t in consumers):
+            print("consumer thread died unexpectedly, abort scan", flush=True)
+            break
+        if q.unfinished_tasks == 0:            # 清空后才评估，防 OCR 延迟误判
+            with rows_lock:
+                new_rows = new_rows_ct[0]
+                new_rows_ct[0] = 0
+            if new_rows == 0:
+                quiet += 1
+            else:
+                quiet = 0
+            if quiet >= 2:
+                print(f"bottom reached (no new rows x{quiet}, rows={len(rows)})",
+                      flush=True)
+                break
         if not badges:
             empty_screens += 1
         else:
             empty_screens = 0
-        if empty_screens >= 2 or quiet >= 3:
+        if empty_screens >= 2:
             q.join()                     # 清空 OCR 积压后再退出
-            print(f"bottom reached (quiet={quiet}, empty={empty_screens}, "
-                  f"rows={len(rows)})", flush=True)
+            print(f"bottom reached (no badges x{empty_screens}, rows={len(rows)})",
+                  flush=True)
             break
         fast_wheel(-SCROLL_NOTCHES, gcx, gcy)
         time.sleep(0.55)
