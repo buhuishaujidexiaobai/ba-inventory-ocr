@@ -7,18 +7,23 @@
 - 条带哈希去重：重叠行/空格重复条带不入队，消费者只 OCR 新内容
 - 到底判定：角标行位置集合不变 ×2，或解析行数连续 2 屏无新增
 - 滚轮：先 SetCursorPos 到网格质心，确保滚动作用于游戏列表
-用法: python ba_queue_collector.py   （用 本地识图OCR\\ocr-venv 的 python 运行）
+- 名称条带与截图区域均锚定游戏窗口矩形（GetWindowRect），支持任意窗口位置/分辨率
+用法: python ba_queue_collector.py [--fresh]
+  --fresh  忽略旧 rows2.json 重新扫描（旧文件自动备份）
 输出: rows2.json [[TW名称, 数量], ...]（与 ba_map_items.py 兼容，跨页累积）
+日志: 采集日志.txt（控制台输出同步落盘）
 """
+import argparse
 import ctypes
 import json
 import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
-from collections import Counter, deque
+from collections import deque
 
 import mss
 
@@ -59,9 +64,11 @@ else:
     print("[CPU] 未检测到 DirectML 支持，使用默认 CPU 模式", flush=True)
 
 user32 = ctypes.windll.user32
+user32.SetProcessDPIAware()   # 与 mss 的 DPI 感知对齐：窗口/光标/截图坐标统一为物理像素
 SCT = mss.mss()
 SCT_LOCK = threading.Lock()
-ENGINE = make_engine(use_dml=False)  # 主线程（自标定 + 每屏行检测用 CPU，杜绝显卡争用）
+ENGINE = None                 # 主线程 CPU 引擎（自标定 + 每屏行检测），main() 里创建
+WIN = None                    # 游戏窗口矩形 (left, top, right, bottom)，main() 里定位
 
 TEMP = os.path.dirname(os.path.abspath(__file__))
 ROWS_OUT = os.path.join(TEMP, "rows2.json")
@@ -72,7 +79,7 @@ BADGE_RE = re.compile(r"[xX×]\s*(\d[\d,]*)")
 CLICK_SLEEP = 0.03
 SCROLL_NOTCHES = 4                   # 实测 2 格 ≈ 2.2 行 → 4 格 ≈ 4.4 行（<5 行窗口）
 SKIP_EXACT = {"道具", "持有數量", "持有数量", "主能力值", "攻擊力", "攻击力"}
-WIDE = (0, 1050, 1300, 1450)         # 左下大区域（名称横幅+持有數量；覆盖窗口/全屏布局）
+WIDE = (0, 1050, 1300, 1450)         # 左侧信息条带（名称横幅+持有數量）；main() 按游戏窗口矩形与缩放重算
 BADGE_CLICK_DY = 56.0                # 角标在格子中心下方 56px*s 处
 HASH_THRESH = 0.2                    # 条带缩略图 mean|diff| 判重阈值（面板静态，同内容 diff≈0）
 MAX_SCREENS = 80
@@ -89,22 +96,24 @@ def send_esc():
 
 
 def fast_click(x, y):
-    user32.SetCursorPos(int(x), int(y))
+    # 内部坐标均为窗口相对坐标，发往系统时加窗口原点
+    user32.SetCursorPos(int(x + WIN[0]), int(y + WIN[1]))
     user32.mouse_event(2, 0, 0, 0, 0)
     user32.mouse_event(4, 0, 0, 0, 0)
 
 
 def fast_wheel(notches, x, y):
-    user32.SetCursorPos(int(x), int(y))
+    user32.SetCursorPos(int(x + WIN[0]), int(y + WIN[1]))
     time.sleep(0.05)
     user32.mouse_event(0x0800, 0, 0, int(notches * 120), 0)
 
 
 def grab_bgr(region=None):
     if region is None:
-        m = SCT.monitors[1]              # 主屏
+        m = {"left": WIN[0], "top": WIN[1],
+             "width": WIN[2] - WIN[0], "height": WIN[3] - WIN[1]}   # 游戏窗口区域
     else:
-        m = {"left": int(region[0]), "top": int(region[1]),
+        m = {"left": int(WIN[0] + region[0]), "top": int(WIN[1] + region[1]),
              "width": int(region[2] - region[0]), "height": int(region[3] - region[1])}
     raw = np.asarray(SCT.grab(m), dtype=np.uint8)
     return np.ascontiguousarray(raw[:, :, :3])
@@ -147,9 +156,7 @@ def cluster_vals(vals, gap):
 
 def autocalib():
     """全屏角标 → 行/列聚类 → 点阵节奏与原点。失败返回 None。"""
-    raw = np.asarray(SCT.grab(SCT.monitors[1]), dtype=np.uint8)
-    full = np.ascontiguousarray(raw[:, :, :3])
-    badges = xbadges(full)
+    badges = xbadges(grab_bgr(None))
     if len(badges) < 10:
         return None
     s0 = 0.91                        # 初值只影响聚类 gap，最终 s 由列距决定
@@ -275,8 +282,21 @@ def parse_wide(lines):
     return name, count
 
 
+def window_rect(hwnd):
+    """游戏窗口矩形（物理像素）；取不到时回退主屏"""
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+    rc = RECT()
+    if hwnd and user32.GetWindowRect(hwnd, ctypes.byref(rc)) \
+            and rc.right > rc.left and rc.bottom > rc.top:
+        return (rc.left, rc.top, rc.right, rc.bottom)
+    m = SCT.monitors[1]
+    return (m["left"], m["top"], m["left"] + m["width"], m["top"] + m["height"])
+
+
 def activate_game():
-    """找到 BlueArchive 窗口 → 还原（若最小化）→ 置前。返回 True/False"""
+    """找到 BlueArchive 窗口 → 还原（若最小化）→ 置前。返回 hwnd 或 None"""
     out = subprocess.run(
         ["powershell", "-NoProfile", "-Command",
          "(Get-Process BlueArchive -ErrorAction SilentlyContinue | "
@@ -285,7 +305,7 @@ def activate_game():
         capture_output=True, text=True, timeout=30).stdout.strip()
     if not out.isdigit():
         print("未找到 BlueArchive 窗口：请先启动游戏并进入道具页面", flush=True)
-        return False
+        return None
     hwnd = int(out)
     user32.ShowWindow(hwnd, 9)            # SW_RESTORE：最小化则还原
     user32.SetForegroundWindow(hwnd)
@@ -294,7 +314,7 @@ def activate_game():
     print(f"game window hwnd={hwnd} foreground={'OK' if ok else 'FAILED(请手动点一下游戏窗口)'}",
           flush=True)
     time.sleep(0.8)
-    return True
+    return hwnd
 
 
 def dialog_open_full():
@@ -305,10 +325,45 @@ def dialog_open_full():
     return hits >= 2
 
 
+class Tee:
+    """控制台输出同步写入日志文件（采集日志.txt）"""
+
+    def __init__(self, stdout, fp):
+        self.stdout, self.fp = stdout, fp
+
+    def write(self, s):
+        self.stdout.write(s)
+        self.fp.write(s)
+        self.fp.flush()
+
+    def flush(self):
+        self.stdout.flush()
+        self.fp.flush()
+
+
 def main():
-    if not activate_game():
+    ap = argparse.ArgumentParser(description="BA 库存采集器（队列版 v10）")
+    ap.add_argument("--fresh", action="store_true",
+                    help="忽略旧 rows2.json 重新扫描（旧文件自动备份为 rows2_backup_*.json）")
+    args = ap.parse_args()
+
+    global ENGINE, WIN, WIDE
+    ENGINE = make_engine(use_dml=False)   # 主线程（自标定 + 每屏行检测用 CPU，杜绝显卡争用）
+    log_fp = open(os.path.join(TEMP, "采集日志.txt"), "a", encoding="utf-8")
+    log_fp.write("\n===== %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+    sys.stdout = Tee(sys.stdout, log_fp)
+
+    if args.fresh and os.path.exists(ROWS_OUT):
+        bak = ROWS_OUT[:-5] + "_backup_%s.json" % time.strftime("%Y%m%d_%H%M%S")
+        os.replace(ROWS_OUT, bak)
+        print(f"--fresh: 旧采集数据已备份为 {os.path.basename(bak)}", flush=True)
+
+    hwnd = activate_game()
+    if hwnd is None:
         print("未找到游戏窗口，退出。请先启动游戏。", flush=True)
         return
+    WIN = window_rect(hwnd)
+    print(f"game window rect: {WIN}", flush=True)
     time.sleep(0.5)
     geo = None
     for attempt in range(6):
@@ -328,15 +383,27 @@ def main():
     s = geo["s"]
     cols = geo["cols"]
     gcx, gcy = geo["gcx"], geo["gcy"]
+    # 名称条带按游戏窗口底部锚定 + UI 缩放重算（窗口相对坐标）
+    # （全屏 2560x1600、s=1 时等价于旧固定值 (0,1050,1300,1450)；窗口化/其他分辨率自适应）
+    wh = WIN[3] - WIN[1]
+    WIDE = (0.0, wh - 550.0 * s, 1300.0 * s, wh - 150.0 * s)
     print(f"autocalib: s={s:.3f} cols={len(cols)} col_step={geo['spacing']:.0f} "
-          f"row_step={geo['row_spacing']:.0f} wheel=({gcx},{gcy})", flush=True)
+          f"row_step={geo['row_spacing']:.0f} wheel=({gcx},{gcy}) "
+          f"panel=({WIDE[0]:.0f},{WIDE[1]:.0f},{WIDE[2]:.0f},{WIDE[3]:.0f})", flush=True)
 
     rows = []
     if os.path.exists(ROWS_OUT):
-        rows = [tuple(r) for r in json.load(open(ROWS_OUT, encoding="utf-8"))]
+        with open(ROWS_OUT, encoding="utf-8") as f:
+            rows = [tuple(r) for r in json.load(f)]
     known = set(rows)
     rows_lock = threading.Lock()
     print(f"resume: rows2.json 已有 {len(rows)} 行", flush=True)
+
+    def save_rows():
+        with rows_lock:                    # 与消费者线程的并发 append 互斥
+            snap = [list(x) for x in rows]
+        with open(ROWS_OUT, "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False)
 
     q = queue.Queue(maxsize=200)
 
@@ -436,8 +503,7 @@ def main():
         print(f"screen {screen}: rows_detected={len(row_ys)} badges={len(badges)} "
               f"new_strips={clicked} dup={skipped} ({time.time()-t0:.1f}s) rows={len(rows)}",
               flush=True)
-        json.dump([list(x) for x in rows], open(ROWS_OUT, "w", encoding="utf-8"),
-                  ensure_ascii=False)
+        save_rows()
 
         # ===== 到底判定 =====
         # 安静屏判定：新条带 ≤3 连续 3 屏 = 到底（底部橡皮筋回弹导致同位置比对不可靠，
@@ -462,7 +528,7 @@ def main():
         q.put(None)
     for t in consumers:
         t.join(timeout=120)
-    json.dump([list(x) for x in rows], open(ROWS_OUT, "w", encoding="utf-8"), ensure_ascii=False)
+    save_rows()
     print(f"done: {len(rows)} rows", flush=True)
 
 
