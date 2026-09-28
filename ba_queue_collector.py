@@ -281,8 +281,9 @@ def strip_hash(img):
 
 def parse_wide(lines):
     """(text, height) 行列表 → (名称, 数量)。
-    名称 = 行高最大的 CJK 行（名称横幅字体最大，标签/描述/主能力值被高度过滤）；
-    数量 = 最后一个独立数字行。"""
+    名称 = 行高最大的 CJK 行（名称横幅字体最大，标签/描述/主能力值被高度过滤；
+    长度 >20 或含句号的行视为物品描述文本，直接排除——道具名不会这么长）；
+    数量 = 最后一个独立数字行（支持 10K/1.2K/1M 缩写）。"""
     count = None
     for text, _h in reversed(lines):
         m = COUNT_RE.fullmatch(text)
@@ -295,7 +296,8 @@ def parse_wide(lines):
 
     name, best_h = None, 0
     for text, h in lines:
-        if (has_cjk(text) and h > best_h and text not in SKIP_EXACT
+        if (has_cjk(text) and h > best_h and len(text) <= 20 and "。" not in text
+                and text not in SKIP_EXACT
                 and "持有" not in text and "數量" not in text and "数量" not in text
                 and "主能力" not in text and "獲得" not in text and "获得" not in text
                 and "攻擊力" not in text and "攻击力" not in text

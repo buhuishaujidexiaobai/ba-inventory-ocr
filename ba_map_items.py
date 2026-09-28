@@ -18,9 +18,14 @@ ROWS_TOOL = os.path.join(HERE, "rows2.json")
 ITEMS_JSON = os.path.join(HERE, "cache", "items.min.json")
 EQUIP_JSON = os.path.join(HERE, "cache", "equipment.min.json")
 RECOVER_JSON = os.path.join(HERE, "recover_local.json")
+TW_ITEMS_JSON = os.path.join(HERE, "cache", "tw_items.min.json")
+TW_EQUIP_JSON = os.path.join(HERE, "cache", "tw_equipment.min.json")
+LINKS_JSON = os.path.join(HERE, "icon_links.json")
 # SchaleDB CN 数据源：cache 文件缺失时自动下载（已存在则不覆盖本地版本）
 CDN_ITEMS = "https://cdn.arona.icu/schaledb/data/cn/items.min.json"
 CDN_EQUIP = "https://cdn.arona.icu/schaledb/data/cn/equipment.min.json"
+CDN_ITEMS_TW = "https://cdn.arona.icu/schaledb/data/tw/items.min.json"
+CDN_EQUIP_TW = "https://cdn.arona.icu/schaledb/data/tw/equipment.min.json"
 # 输出路径：默认工具目录下 输出\，可用环境变量 BA_OUT 覆盖
 OUT = os.environ.get("BA_OUT", os.path.join(HERE, "输出", "什亭之匣库存导入_OCR采集.json"))
 
@@ -109,20 +114,44 @@ def main():
     print(f"rows source: {rows_fp}")
     ensure_db(ITEMS_JSON, CDN_ITEMS)
     ensure_db(EQUIP_JSON, CDN_EQUIP)
+    ensure_db(TW_ITEMS_JSON, CDN_ITEMS_TW)
+    ensure_db(TW_EQUIP_JSON, CDN_EQUIP_TW)
     with open(ITEMS_JSON, encoding="utf-8") as f:
         items = json.load(f)
     with open(EQUIP_JSON, encoding="utf-8") as f:
         equip = json.load(f)
 
-    # 归一化候选名：norm_name -> (kind, iid)，kind ∈ {"item", "equipment"}
+    # 归一化候选名：norm_name -> (kind, iid)，kind ∈ {"item", "equipment"}。
+    # TW 区名（游戏原文名，如 女武神/項鍊萬能設計圖）优先插入，CN 区名作补充——
+    # TW 服译名与 CN 差异大（女武神 vs 瓦尔基丽），仅靠 CN 名 + 模糊匹配会串行。
     norm_names = {}
     raw_name = {}
+    with open(TW_ITEMS_JSON, encoding="utf-8") as f:
+        items_tw = json.load(f)
+    with open(TW_EQUIP_JSON, encoding="utf-8") as f:
+        equip_tw = json.load(f)
+    for iid, v in items_tw.items():
+        norm_names.setdefault(norm(v["Name"]), ("item", iid))
+    for iid, v in equip_tw.items():
+        norm_names.setdefault(norm(v["Name"]), ("equipment", iid))
     for iid, v in items.items():
         norm_names.setdefault(norm(v["Name"]), ("item", iid))
         raw_name[("item", iid)] = v["Name"]
     for iid, v in equip.items():
         norm_names.setdefault(norm(v["Name"]), ("equipment", iid))
         raw_name[("equipment", iid)] = v["Name"]
+
+    # 图标对齐链接（ba_icon_linker.py 产出，可选）：格子图标比对 SchaleDB 图标库
+    # 得到的 名称→Id 直连，专治名字误读到认不出的行。仅自动应用高置信（score≥0.8）。
+    if os.path.exists(LINKS_JSON):
+        with open(LINKS_JSON, encoding="utf-8") as f:
+            links = json.load(f)
+        n_link = 0
+        for n, info in links.items():
+            if info.get("score", 0) >= 0.8:
+                norm_names.setdefault(n, (info["kind"], str(info["id"])))
+                n_link += 1
+        print(f"icon_links.json: 应用 {n_link}/{len(links)} 条图标对齐链接")
 
     # MANUAL 键同样过 norm()（键是繁体、行名会被转成简体，不规范化永远匹配不上）
     MANUAL_N = {norm(k): v for k, v in MANUAL.items()}

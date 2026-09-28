@@ -94,6 +94,16 @@ class TestParseWide(unittest.TestCase):
         name, count = self.parse([("某物品", 40), ("x1.234", 20)])
         self.assertEqual((name, count), ("某物品", None))
 
+    def test_description_lines_rejected(self):
+        # 面板描述文本（超长行/含句号）不能被当成物品名
+        name, count = self.parse([("弦生留下的杏仁巧克力°上頭绑著可愛的红色蝴蝶结，或不", 44), ("x3", 18)])
+        self.assertEqual((name, count), (None, 3))
+        name, count = self.parse([("來自蓮實的子彈造型巧克力。尺寸小", 44), ("x5", 18)])
+        self.assertEqual((name, count), (None, 5))
+        # 正常长度的名字不受影响
+        name, count = self.parse([("特級技術筆記（女武神）", 44), ("x761", 18)])
+        self.assertEqual((name, count), ("特級技術筆記（女武神）", 761))
+
 
 class TestBadgeRegex(unittest.TestCase):
     @classmethod

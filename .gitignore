@@ -24,3 +24,9 @@ local_python_path.txt
 collected_icons.json
 site_inventory.json
 equip_rows.json
+
+# 图标对齐链接（ba_icon_linker 产出）
+icon_links.json
+
+# 本地临时验证文件
+_*.json
