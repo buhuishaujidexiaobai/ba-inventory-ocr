@@ -14,3 +14,13 @@ diag_*.png
 # Python
 __pycache__/
 *.pyc
+
+# 个人校准与本机配置（不入库）
+recover_local.json
+local_python_path.txt
+采集日志.txt
+
+# 实验脚本的个人产物
+collected_icons.json
+site_inventory.json
+equip_rows.json

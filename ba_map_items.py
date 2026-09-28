@@ -2,11 +2,13 @@
 """把采集的 (TW名称, 数量) 行模糊映射到 SchaleDB 物品/設計圖 Id，生成什亭之匣导入 JSON
 - 物品 → item_<Id>（cache/items.min.json）
 - 裝備設計圖 → equipment_<Id>（cache/equipment.min.json）
+- 可选 recover_local.json：个人人工校准值（不入库），键为 item_<Id>/equipment_<Id>
 """
 import difflib
 import json
 import os
 import re
+import urllib.request
 from collections import Counter, defaultdict
 
 from zhconv import convert as t2s
@@ -15,6 +17,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROWS_TOOL = os.path.join(HERE, "rows2.json")
 ITEMS_JSON = os.path.join(HERE, "cache", "items.min.json")
 EQUIP_JSON = os.path.join(HERE, "cache", "equipment.min.json")
+RECOVER_JSON = os.path.join(HERE, "recover_local.json")
+# SchaleDB CN 数据源：cache 文件缺失时自动下载（已存在则不覆盖本地版本）
+CDN_ITEMS = "https://cdn.arona.icu/schaledb/data/cn/items.min.json"
+CDN_EQUIP = "https://cdn.arona.icu/schaledb/data/cn/equipment.min.json"
 # 输出路径：默认工具目录下 输出\，可用环境变量 BA_OUT 覆盖
 OUT = os.environ.get("BA_OUT", os.path.join(HERE, "输出", "什亭之匣库存导入_OCR采集.json"))
 
@@ -45,12 +51,67 @@ def norm(s):
     return s
 
 
+# 人工确认的礼物/杂项映射（OCR 名称片段 → item Id，包含式双向匹配）
+MANUAL = {
+    "肌膚清透": "5006", "肌肤清透": "5006", "粉底霜": "5007",
+    "甜點口味": "5012", "甜点口味": "5012", "软垫": "5014", "軟墊": "5014",
+    "圈圈眼镜": "5018", "圈圈眼鏡": "5018", "熊娃娃": "5020",
+    "顏料组合": "5022", "颜料组合": "5022", "手帕": "5031", "百科": "5032",
+    "针组合": "5109", "针線组合": "5109", "桌游": "5112", "手工蛋糕": "5026",
+}
+# 人工确认的設計圖/装备映射（2026-09-27 审计定案，优先级高于模糊匹配）
+# 用途：① OCR 拉丁名/异名行归位；② 短名模糊匹配串行的纠正
+MANUAL_EQ = {
+    # 强化珠四级（模糊匹配把四个等级全串到 3 上）
+    "下级强化石": "1", "下級強化石": "1",
+    "高级强化石": "3", "高級強化石": "3",
+    "最高级强化石": "4", "最高級強化石": "4",
+    # 拉丁名装备（模糊匹配无法命中）
+    "Lorelei手": "108007",        # 罗蕾莱手表设计图 T8
+    "Lorelei徽章": "105007",      # 罗蕾莱徽章设计图 T8
+    "Veronica刺": "105003",       # 维罗妮卡刺绣徽章设计图 T4
+    "Manaslu": "105001",          # 玛纳斯卢毛毡徽章设计图 T2
+    "Coco Devil": "105005",       # 可可恶魔徽章设计图 T6
+    "Kazeyama": "105004",         # 风山纹章设计图 T5
+    # 异名纠正
+    "魔鬼翅膀托特包": "104005",   # 恶魔之翼挎包设计图 T6（曾误入 106003 翅膀发夹）
+    "古典法樂福鞋": "103003",     # 复古漆皮豆豆鞋设计图 T4（乐福鞋=豆豆鞋）
+    "荷葉複迷你帽": "101005",     # 褶边小礼帽设计图 T6
+    "術俊背式皮革書包": "104004", # 战术双肩包设计图 T5（曾误入 104003 藏蓝书包）
+    "海軍藍書包": "104003",       # 藏蓝书包设计图 T4
+    "填万能": "503000",           # 鞋万能设计图（鞋→填 OCR 误读，排除法唯一剩余）
+    "髪灰萬能": "506000",         # 发夹万能设计图（髪灰=髮飾=发夹，曾误入 503000）
+}
+# 归属存疑、禁止模糊匹配吞并的行（进 unmapped 人工复核，宁可缺不可错）
+BLOCK_EQ = ("调節器保護套", "式頂設计", "骨董設计", "水蜜桃髪灰", "控手設计", "十字架頂")
+
+
+def ensure_db(fp, url):
+    """cache 元数据缺失时从 SchaleDB CDN 下载（先落临时文件校验再替换）"""
+    if os.path.exists(fp):
+        return
+    print(f"{os.path.basename(fp)} 不存在，从 CDN 下载: {url}")
+    os.makedirs(os.path.dirname(fp), exist_ok=True)
+    tmp = fp + ".downloading"
+    with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as f:
+        f.write(resp.read())
+    with open(tmp, encoding="utf-8") as f:      # 下载完整性校验
+        json.load(f)
+    os.replace(tmp, fp)
+    print(f"  saved: {fp}")
+
+
 def main():
     rows_fp = ROWS_TOOL
-    rows = [tuple(r) for r in json.load(open(rows_fp, encoding="utf-8"))]
+    with open(rows_fp, encoding="utf-8") as f:
+        rows = [tuple(r) for r in json.load(f)]
     print(f"rows source: {rows_fp}")
-    items = json.load(open(ITEMS_JSON, encoding="utf-8"))
-    equip = json.load(open(EQUIP_JSON, encoding="utf-8"))
+    ensure_db(ITEMS_JSON, CDN_ITEMS)
+    ensure_db(EQUIP_JSON, CDN_EQUIP)
+    with open(ITEMS_JSON, encoding="utf-8") as f:
+        items = json.load(f)
+    with open(EQUIP_JSON, encoding="utf-8") as f:
+        equip = json.load(f)
 
     # 归一化候选名：norm_name -> (kind, iid)，kind ∈ {"item", "equipment"}
     norm_names = {}
@@ -62,39 +123,6 @@ def main():
         norm_names.setdefault(norm(v["Name"]), ("equipment", iid))
         raw_name[("equipment", iid)] = v["Name"]
 
-    # 人工确认的礼物/杂项映射（OCR 名称片段 → item Id，包含式双向匹配）
-    MANUAL = {
-        "肌膚清透": "5006", "肌肤清透": "5006", "粉底霜": "5007",
-        "甜點口味": "5012", "甜点口味": "5012", "软垫": "5014", "軟墊": "5014",
-        "圈圈眼镜": "5018", "圈圈眼鏡": "5018", "熊娃娃": "5020",
-        "顏料组合": "5022", "颜料组合": "5022", "手帕": "5031", "百科": "5032",
-        "针组合": "5109", "针線组合": "5109", "桌游": "5112", "手工蛋糕": "5026",
-    }
-    # 人工确认的設計圖/装备映射（2026-09-27 审计定案，优先级高于模糊匹配）
-    # 用途：① OCR 拉丁名/异名行归位；② 短名模糊匹配串行的纠正
-    MANUAL_EQ = {
-        # 强化珠四级（模糊匹配把四个等级全串到 3 上）
-        "下级强化石": "1", "下級強化石": "1",
-        "高级强化石": "3", "高級強化石": "3",
-        "最高级强化石": "4", "最高級強化石": "4",
-        # 拉丁名装备（模糊匹配无法命中）
-        "Lorelei手": "108007",        # 罗蕾莱手表设计图 T8
-        "Lorelei徽章": "105007",      # 罗蕾莱徽章设计图 T8
-        "Veronica刺": "105003",       # 维罗妮卡刺绣徽章设计图 T4
-        "Manaslu": "105001",          # 玛纳斯卢毛毡徽章设计图 T2
-        "Coco Devil": "105005",       # 可可恶魔徽章设计图 T6
-        "Kazeyama": "105004",         # 风山纹章设计图 T5
-        # 异名纠正
-        "魔鬼翅膀托特包": "104005",   # 恶魔之翼挎包设计图 T6（曾误入 106003 翅膀发夹）
-        "古典法樂福鞋": "103003",     # 复古漆皮豆豆鞋设计图 T4（乐福鞋=豆豆鞋）
-        "荷葉複迷你帽": "101005",     # 褶边小礼帽设计图 T6
-        "術俊背式皮革書包": "104004", # 战术双肩包设计图 T5（曾误入 104003 藏蓝书包）
-        "海軍藍書包": "104003",       # 藏蓝书包设计图 T4
-        "填万能": "503000",           # 鞋万能设计图（鞋→填 OCR 误读，排除法唯一剩余）
-        "髪灰萬能": "506000",         # 发夹万能设计图（髪灰=髮飾=发夹，曾误入 503000）
-    }
-    # 归属存疑、禁止模糊匹配吞并的行（进 unmapped 人工复核，宁可缺不可错）
-    BLOCK_EQ = ("调節器保護套", "式頂設计", "骨董設计", "水蜜桃髪灰", "控手設计", "十字架頂")
     # MANUAL 键同样过 norm()（键是繁体、行名会被转成简体，不规范化永远匹配不上）
     MANUAL_N = {norm(k): v for k, v in MANUAL.items()}
     by_key = defaultdict(Counter)   # (kind, iid) -> Counter(count)
@@ -148,17 +176,15 @@ def main():
         if len(counter) > 1:
             conflicts.append((key, raw_name[key], dict(counter), best))
 
-    # 早前运行已人工验证的条目——直接覆盖 OCR 读数（已验证值优先于众数/新近度）
-    RECOVER = {
-        "11": 0,   # 中级活动报告书
-        "12": 0,    # 高级活动报告书
-        "61": 0,    # 悬赏通缉奖币
-        "120": 0, "121": 0, "122": 0, "123": 0,  # 沃尔夫塞格系列
-        "81": 0,     # 中级合成石（置信度中）
-        "220": 0, "221": 0, "222": 0,  # 黄金毛线系列（置信度中）
-    }
-    for k, v in RECOVER.items():
-        results[("item", k)] = v
+    # 个人人工校准值（recover_local.json，已 gitignore，不会进入仓库/发布包）：
+    # 直接覆盖 OCR 读数（已验证值优先于众数/新近度）。文件不存在时完全按 OCR 结果输出。
+    if os.path.exists(RECOVER_JSON):
+        with open(RECOVER_JSON, encoding="utf-8") as f:
+            recover = json.load(f)
+        for k, v in recover.items():
+            kind, iid = k.split("_", 1)
+            results[(kind, iid)] = int(v)
+        print(f"recover_local.json: 已应用 {len(recover)} 条人工校准值")
 
     out = {}
     for (kind, iid), cnt in results.items():
