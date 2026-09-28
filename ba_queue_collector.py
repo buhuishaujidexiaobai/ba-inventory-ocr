@@ -75,16 +75,20 @@ ROWS_OUT = os.path.join(TEMP, "rows2.json")
 
 BASE_COL_SPACING = 239.0
 BASE_ROW_SPACING = 205.0
-# 角标：游戏对 ≥10000 的数量缩写为 10K/1.2K/1M；小数点仅在带 K/M 时合法
-# （防止 OCR 把千分位逗号误读成小数点，如 x1,234 → x1.234）
-BADGE_RE = re.compile(r"[xX×]\s*(\d[\d,]*)((?:\.\d+)?[KkMm])?")
+# 角标/面板数量：游戏对 ≥10000 缩写为 10K / 1.2K / 1M。小数点仅在带 K/M 后缀时
+# 合法（防 OCR 把千分位逗号误读成小数点，如 x1,234 → x1.234，此时整体拒配）。
+# 分组：1=整数位, 2=小数位(带K/M分支), 3=字母(带K/M分支), 4=字母(整数直连分支)
+_NUM_PART = r"(\d[\d,]*)(?:\.(\d+)([KkMm])|([KkMm]))?"
+BADGE_RE = re.compile(r"[xX×]\s*" + _NUM_PART)      # 角标一定带 x/X 前缀
+COUNT_RE = re.compile(r"[xX×]?\s*" + _NUM_PART)     # 面板持有数量行可不带前缀
 
 
-def badge_value(m):
-    """角标正则 match → 数量。K/M 缩写会截断末位（10K=10000~10049），仅用于行定位；
-    物品数量以面板读数（parse_wide）为准。"""
-    num = float(m.group(1).replace(",", ""))
-    return int(round(num * {"K": 1e3, "M": 1e6}.get((m.group(2) or "").upper(), 1)))
+def scaled_value(m):
+    """BADGE_RE/COUNT_RE 的 match → 数量。K/M 缩写会截断末位（10K=10000~10049），
+    仅用于行定位与兜底；精确数量以面板读数为准。"""
+    int_part, dec, letter_a, letter_b = m.groups()
+    num = float((int_part + ("." + dec if dec else "")).replace(",", ""))
+    return int(round(num * {"K": 1e3, "M": 1e6}.get((letter_a or letter_b or "").upper(), 1)))
 CLICK_SLEEP = 0.03
 SCROLL_NOTCHES = 4                   # 实测 2 格 ≈ 2.2 行 → 4 格 ≈ 4.4 行（<5 行窗口）
 SKIP_EXACT = {"道具", "持有數量", "持有数量", "主能力值", "攻擊力", "攻击力"}
@@ -146,7 +150,7 @@ def xbadges(arr):
             continue
         xs = [q[0] for q in b["box"]]
         ys = [q[1] for q in b["box"]]
-        out.append((sum(xs) / 4, sum(ys) / 4, badge_value(m)))
+        out.append((sum(xs) / 4, sum(ys) / 4, scaled_value(m)))
     return out
 
 
@@ -228,7 +232,7 @@ def detect_rows(grid, geo):
             continue
         xs = [q[0] for q in b["box"]]
         ys = [q[1] for q in b["box"]]
-        badges.append((sum(xs) / 4, sum(ys) / 4, badge_value(m)))
+        badges.append((sum(xs) / 4, sum(ys) / 4, scaled_value(m)))
     dialog_open = dialog_hits >= 2
     if not badges:
         return [], [], dialog_open
@@ -279,10 +283,9 @@ def parse_wide(lines):
     数量 = 最后一个独立数字行。"""
     count = None
     for text, _h in reversed(lines):
-        m = re.fullmatch(r"[xX×]?\s*(\d[\d,]*)((?:\.\d+)?[KkMm])?", text)
+        m = COUNT_RE.fullmatch(text)
         if m:
-            num = float(m.group(1).replace(",", ""))
-            count = int(round(num * {"K": 1e3, "M": 1e6}.get((m.group(2) or "").upper(), 1)))
+            count = scaled_value(m)
             break
 
     def has_cjk(t):

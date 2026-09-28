@@ -98,9 +98,9 @@ class TestParseWide(unittest.TestCase):
 class TestBadgeRegex(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from ba_queue_collector import BADGE_RE, badge_value
+        from ba_queue_collector import BADGE_RE, scaled_value
         cls.badge_re = BADGE_RE
-        cls.val = staticmethod(badge_value)
+        cls.val = staticmethod(scaled_value)
 
     def test_plain_numbers(self):
         self.assertEqual(self.val(self.badge_re.fullmatch("x792")), 792)
