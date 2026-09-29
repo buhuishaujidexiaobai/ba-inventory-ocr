@@ -439,8 +439,12 @@ def main():
             json.dump(snap, f, ensure_ascii=False)
 
     new_rows_ct = [0]                  # 消费端实际新增行计数（兜底判定用）
-    ledger = {}                        # 页内格子台账 (cx,cy) -> {state, attempts}
+    ledger = {}                        # 页内格子台账 (行序号, 列序号) -> {state, attempts}
                                        # state ∈ pending/dup/valid/invalid/giveup
+                                       # 键用格位索引而非像素坐标：角标定位有 ±1-2px 抖动，
+                                       # 像素键会让 invalid 条目成为永远点不到的孤儿，
+                                       # 覆盖率检查永不通过（2026-09-29 实测）
+    prev_row_count = None              # 上一屏检测到的行数（行数变化 = 页面结构变，清台账）
 
     q = queue.Queue(maxsize=200)
 
@@ -557,43 +561,44 @@ def main():
 
         # 点击目标：换页（sweep）→ 全格遍历；同一页（verify，含滚轮丢失的罕见情形）
         # → 只点台账未解决的格子（invalid 重试至 RETRY_LIMIT，dup/valid 不重复），
-        # 并附末行投影探测（格子同样入账，读取失败会被重试而不是漏掉）
-        targets = []
+        # 并附末行投影探测（格子同样入账，读取失败会被重试而不是漏掉）。
+        # 台账键 = (行序号, 列序号)，对角标定位的 ±1-2px 抖动免疫。
+        if len(row_ys) != prev_row_count:
+            ledger.clear()               # 行数变化 = 页面结构变，旧台账全部作废
+        prev_row_count = len(row_ys)
+
+        def pick(key):
+            """返回该格子是否需要（重新）点击；顺便维护重试计数与放弃标记"""
+            st = ledger.get(key)
+            if st is not None:
+                if st["state"] in ("dup", "valid", "giveup"):
+                    return False
+                if st["state"] == "invalid" and st["attempts"] >= RETRY_LIMIT:
+                    st["state"] = "giveup"
+                    return False
+                if st["state"] == "invalid":
+                    st["attempts"] += 1
+            return True
+
+        targets = []                     # (cell_key, (cx, cy))
         if same_page:
-            for ry in row_ys:
-                for cx in cols:
-                    key = (int(cx), int(ry))
-                    st = ledger.get(key)
-                    if st is not None:
-                        if st["state"] in ("dup", "valid", "giveup"):
-                            continue
-                        if st["state"] == "invalid":
-                            if st["attempts"] >= RETRY_LIMIT:
-                                st["state"] = "giveup"
-                                continue
-                            st["attempts"] += 1
-                    targets.append((cx, ry))
+            for i, ry in enumerate(row_ys):
+                for j, cx in enumerate(cols):
+                    if pick((i, j)):
+                        targets.append(((i, j), (cx, ry)))
             if row_ys:
                 probe_y = max(row_ys) + row_spacing
                 if probe_y < (WIN[3] - WIN[1]) - 10:     # 投影行须仍在游戏窗口内
-                    for cx in cols:
-                        key = (int(cx), int(probe_y))
-                        st = ledger.get(key)
-                        if st is not None:
-                            if st["state"] in ("dup", "valid", "giveup"):
-                                continue
-                            if st["state"] == "invalid" and st["attempts"] >= RETRY_LIMIT:
-                                st["state"] = "giveup"
-                                continue
-                            if st["state"] == "invalid":
-                                st["attempts"] += 1
-                        targets.append((cx, probe_y))
+                    for j, cx in enumerate(cols):
+                        if pick(("p", j)):
+                            targets.append((("p", j), (cx, probe_y)))
         else:
-            targets = [(cx, ry) for ry in row_ys for cx in cols]
+            targets = [((i, j), (cx, ry))
+                       for i, ry in enumerate(row_ys) for j, cx in enumerate(cols)]
 
         clicked = skipped = 0
-        for cx, ry in targets:
-            if click_cell(cx, ry, cell_key=(int(cx), int(ry))):
+        for key, (cx, cy) in targets:
+            if click_cell(cx, cy, cell_key=key):
                 clicked += 1
             else:
                 skipped += 1
@@ -629,9 +634,11 @@ def main():
                 if n_give:
                     print("── 放弃的格子（重试 3 次仍读不出，建议跑 ba_icon_linker.py 对齐）──",
                           flush=True)
-                    for k, v in sorted(ledger.items()):
+                    for k, v in sorted(ledger.items(), key=lambda kv: str(kv[0])):
                         if v["state"] == "giveup":
-                            print(f"  cell({k[0]},{k[1]}) attempts={v['attempts']}", flush=True)
+                            where = (f"probe col{k[1]}" if k[0] == "p"
+                                     else f"row{k[0]} col{k[1]}")
+                            print(f"  {where} attempts={v['attempts']}", flush=True)
                 break
             if quiet >= 3:
                 print(f"bottom reached (fallback: no new rows x{quiet}, rows={len(rows)})",
