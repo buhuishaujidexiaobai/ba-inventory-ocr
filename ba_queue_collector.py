@@ -289,27 +289,45 @@ def strip_hash(img):
 def parse_wide(lines):
     """(text, height) 行列表 → (名称, 数量)。
     名称 = 行高最大的 CJK 行（名称横幅字体最大，标签/描述/主能力值被高度过滤；
-    长度 >20 或含句号的行视为物品描述文本，直接排除——道具名不会这么长）；
+    长度 >20 或含句号的行视为物品描述文本，直接排除——道具名不会这么长）。
+    名称横幅过长会换行：学校后缀（如（三一））单独成行，须拼回主名——
+    高級技術筆記（三一） 与 高級技術筆記（千年） 是不同物品，丢了后缀无法区分；
+    反之若抓到的主名是学校行本身（（狂）等），则回找相邻的主名行拼合。
     数量 = 最后一个独立数字行（支持 10K/1.2K/1M 缩写）。"""
+    texts = [t for t, _h in lines]
+
+    def is_school(t):
+        return bool(re.fullmatch(r"[（(][^（）()]{1,8}[）)]", t))
+
+    def base_ok(t):
+        return (t and any("一" <= ch <= "鿿" for ch in t) and len(t) <= 20 and "。" not in t
+                and t not in SKIP_EXACT
+                and "持有" not in t and "數量" not in t and "数量" not in t
+                and "主能力" not in t and "獲得" not in t and "获得" not in t
+                and "攻擊力" not in t and "攻击力" not in t
+                and not re.match(r"^20\d{2}-", t))
+
+    name, best_h, name_idx = None, 0, -1
+    for idx, (text, h) in enumerate(lines):
+        if is_school(text):
+            continue                     # 学校后缀行不当主名
+        if base_ok(text) and h > best_h:
+            name, best_h, name_idx = text, h, idx
+    if name:
+        nxt = texts[name_idx + 1] if name_idx + 1 < len(lines) else None
+        if nxt and is_school(nxt):
+            name += nxt                  # 拼回换行的学校后缀
+        elif is_school(name):
+            prev = texts[name_idx - 1] if name_idx > 0 else None
+            if base_ok(prev) and not is_school(prev):
+                name = prev + name       # 误抓到学校行：回找相邻的主名行
+
     count = None
-    for text, _h in reversed(lines):
+    for text in reversed(texts):
         m = COUNT_RE.fullmatch(text)
         if m:
             count = scaled_value(m)
             break
-
-    def has_cjk(t):
-        return any("一" <= ch <= "鿿" for ch in t)
-
-    name, best_h = None, 0
-    for text, h in lines:
-        if (has_cjk(text) and h > best_h and len(text) <= 20 and "。" not in text
-                and text not in SKIP_EXACT
-                and "持有" not in text and "數量" not in text and "数量" not in text
-                and "主能力" not in text and "獲得" not in text and "获得" not in text
-                and "攻擊力" not in text and "攻击力" not in text
-                and not re.match(r"^20\d{2}-", text)):
-            name, best_h = text, h
     return name, count
 
 

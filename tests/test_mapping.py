@@ -89,11 +89,6 @@ class TestParseWide(unittest.TestCase):
         name, count = self.parse([("鞋萬能設計圖", 40), ("x10K", 20)])
         self.assertEqual((name, count), ("鞋萬能設計圖", 10000))
 
-    def test_count_decimal_requires_suffix(self):
-        # 千分位逗号被 OCR 误读成小数点时（x1.234）必须判为非数量行，而不是解析成 1
-        name, count = self.parse([("某物品", 40), ("x1.234", 20)])
-        self.assertEqual((name, count), ("某物品", None))
-
     def test_description_lines_rejected(self):
         # 面板描述文本（超长行/含句号）不能被当成物品名
         name, count = self.parse([("弦生留下的杏仁巧克力°上頭绑著可愛的红色蝴蝶结，或不", 44), ("x3", 18)])
@@ -103,6 +98,23 @@ class TestParseWide(unittest.TestCase):
         # 正常长度的名字不受影响
         name, count = self.parse([("特級技術筆記（女武神）", 44), ("x761", 18)])
         self.assertEqual((name, count), ("特級技術筆記（女武神）", 761))
+
+    def test_wrapped_school_suffix_merged(self):
+        # 面板名称横幅换行：学校后缀（（三一））单独成行，必须拼回主名——
+        # 高級技術筆記（三一） 与 高級技術筆記（千年） 是不同物品
+        name, count = self.parse([("高級技術筆記", 44), ("（三一）", 30),
+                                  ("持有數量", 16), ("x159", 20)])
+        self.assertEqual((name, count), ("高級技術筆記（三一）", 159))
+
+    def test_school_only_capture_recovers_base(self):
+        # 学校行 OCR 框偶尔更高被当成主名（历史上的 （狂） 行）：回找相邻主名行拼合
+        name, count = self.parse([("高級技術筆記", 30), ("（狂）", 44), ("x554", 18)])
+        self.assertEqual((name, count), ("高級技術筆記（狂）", 554))
+
+    def test_count_decimal_requires_suffix(self):
+        # 千分位逗号被 OCR 误读成小数点时（x1.234）必须判为非数量行，而不是解析成 1
+        name, count = self.parse([("某物品", 40), ("x1.234", 20)])
+        self.assertEqual((name, count), ("某物品", None))
 
 
 class TestBadgeRegex(unittest.TestCase):

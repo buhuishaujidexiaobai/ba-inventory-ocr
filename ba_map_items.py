@@ -126,19 +126,28 @@ def main():
     # TW 服译名与 CN 差异大（女武神 vs 瓦尔基丽），仅靠 CN 名 + 模糊匹配会串行。
     norm_names = {}
     raw_name = {}
+    norm_owner = Counter()           # 同名塌缩检测：norm 名 → 收录物品数（活动点数×23 等）
     with open(TW_ITEMS_JSON, encoding="utf-8") as f:
         items_tw = json.load(f)
     with open(TW_EQUIP_JSON, encoding="utf-8") as f:
         equip_tw = json.load(f)
     for iid, v in items_tw.items():
-        norm_names.setdefault(norm(v["Name"]), ("item", iid))
+        nn = norm(v["Name"])
+        norm_names.setdefault(nn, ("item", iid))
+        norm_owner[nn] += 1
     for iid, v in equip_tw.items():
-        norm_names.setdefault(norm(v["Name"]), ("equipment", iid))
+        nn = norm(v["Name"])
+        norm_names.setdefault(nn, ("equipment", iid))
+        norm_owner[nn] += 1
     for iid, v in items.items():
-        norm_names.setdefault(norm(v["Name"]), ("item", iid))
+        nn = norm(v["Name"])
+        norm_names.setdefault(nn, ("item", iid))
+        norm_owner[nn] += 1
         raw_name[("item", iid)] = v["Name"]
     for iid, v in equip.items():
-        norm_names.setdefault(norm(v["Name"]), ("equipment", iid))
+        nn = norm(v["Name"])
+        norm_names.setdefault(nn, ("equipment", iid))
+        norm_owner[nn] += 1
         raw_name[("equipment", iid)] = v["Name"]
 
     # 图标对齐链接（ba_icon_linker.py 产出，可选）：格子图标比对 SchaleDB 图标库
@@ -185,7 +194,23 @@ def main():
             last_idx[("item", hit, count)] = ridx
             continue
         if n in norm_names:
+            if norm_owner.get(n, 1) >= 2:
+                # 同名塌缩（如 活動點数 ×23）：名字无法区分到具体物品，不瞎猜
+                ambiguous.append((name, count))
+                continue
             key = norm_names[n]
+            by_key[key][count] += 1
+            last_idx[(key[0], key[1], count)] = ridx
+            continue
+        # 前缀歧义保护：行名是 ≥2 个物品名的前缀时（游戏内学校系道具不显示学校——
+        # 高級技術筆記/一般戰術教育BD 家族），名字无法定位唯一物品，不瞎猜。
+        # 名称换行拼回修复后，正常行都带学校后缀精确命中，此护栏只拦历史/异常行。
+        prefix_hits = [c for c in norm_names if c != n and c.startswith(n)]
+        if len(prefix_hits) >= 2:
+            ambiguous.append((name, count))
+            continue
+        if len(prefix_hits) == 1:
+            key = norm_names[prefix_hits[0]]
             by_key[key][count] += 1
             last_idx[(key[0], key[1], count)] = ridx
             continue
