@@ -60,7 +60,7 @@
 ### 方式一：免安装便携版（推荐·解压即用）
 如果您不想在电脑上配置 Python 环境，可以直接使用预打包的完整便携版：
 1. 前往本仓库的 [Releases 发行版页面](https://github.com/buhuishaujidexiaobai/ba-inventory-ocr/releases)；
-2. 下载最新的 `ba-inventory-ocr-v1.0.3-portable.zip`（内嵌完整依赖与轻量 Python 运行环境，支持 GPU 硬件加速）；
+2. 下载最新的 `ba-inventory-ocr-v1.0.4-portable.zip`（内嵌完整依赖与轻量 Python 运行环境，支持 GPU 硬件加速）；
 3. 解压到任意目录；
 4. 直接按下方使用说明双击运行即可，无需额外安装任何软件。
 
