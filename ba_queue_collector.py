@@ -93,9 +93,10 @@ def scaled_value(m):
     return int(round(num * {"K": 1e3, "M": 1e6}.get((letter_a or letter_b or "").upper(), 1)))
 CLICK_SLEEP = 0.03
 SCROLL_NOTCHES = 4                   # 实测 2 格 ≈ 2.2 行 → 4 格 ≈ 4.4 行（<5 行窗口）
-SCROLL_SETTLE = 1.0                  # 滚动后等待秒数：列表到底再滚会触发回弹动画，
-                                     # 截图太早会捕到弹跳中的帧，页哈希对比误判"换页"，
-                                     # 导致底部验证模式反复退回全格扫（2026-09-29 实测）
+SCROLL_POLL = 0.2                    # 滚动后停稳轮询步长（秒）
+SCROLL_POLL_MAX = 10                 # 停稳轮询上限（×0.2s）。到底后滚轮会触发回弹动画，
+                                     # 固定等待（0.55s/1.0s 都实测过）偶尔截到弹跳中的帧，
+                                     # 页哈希误判换页 + 点击坐标随位移偏移，只能轮询等停稳
 SKIP_EXACT = {"道具", "持有數量", "持有数量", "主能力值", "攻擊力", "攻击力"}
 WIDE = (0, 1050, 1300, 1450)         # 左侧信息条带（名称横幅+持有數量）；main() 按游戏窗口矩形与缩放重算
 BADGE_CLICK_DY = 56.0                # 角标在格子中心下方 56px*s 处
@@ -654,7 +655,17 @@ def main():
                   flush=True)
             break
         fast_wheel(-SCROLL_NOTCHES, gcx, gcy)
-        time.sleep(SCROLL_SETTLE)    # 等回弹动画停稳，下一屏的页哈希/行检测才可信
+        # 等滚动/回弹彻底停稳：0.2s 步长轮询网格哈希，连续两次一致即认为稳定。
+        # 中段列表滚完即稳（~0.4s 通过）；底部回弹可能持续 1s 以上，按需等待。
+        prev_sig = None
+        for _ in range(SCROLL_POLL_MAX):
+            time.sleep(SCROLL_POLL)
+            with SCT_LOCK:
+                sig = strip_hash(grab_bgr(tuple(geo["grid_bbox"])))
+            if prev_sig is not None and float(np.mean(
+                    np.abs(sig.astype(np.int16) - prev_sig.astype(np.int16)))) < HASH_THRESH:
+                break
+            prev_sig = sig
 
     for _ in range(len(consumers)):
         q.put(None)
