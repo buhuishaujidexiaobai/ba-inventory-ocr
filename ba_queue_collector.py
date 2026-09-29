@@ -93,6 +93,9 @@ def scaled_value(m):
     return int(round(num * {"K": 1e3, "M": 1e6}.get((letter_a or letter_b or "").upper(), 1)))
 CLICK_SLEEP = 0.03
 SCROLL_NOTCHES = 4                   # 实测 2 格 ≈ 2.2 行 → 4 格 ≈ 4.4 行（<5 行窗口）
+SCROLL_SETTLE = 1.0                  # 滚动后等待秒数：列表到底再滚会触发回弹动画，
+                                     # 截图太早会捕到弹跳中的帧，页哈希对比误判"换页"，
+                                     # 导致底部验证模式反复退回全格扫（2026-09-29 实测）
 SKIP_EXACT = {"道具", "持有數量", "持有数量", "主能力值", "攻擊力", "攻击力"}
 WIDE = (0, 1050, 1300, 1450)         # 左侧信息条带（名称横幅+持有數量）；main() 按游戏窗口矩形与缩放重算
 BADGE_CLICK_DY = 56.0                # 角标在格子中心下方 56px*s 处
@@ -644,7 +647,7 @@ def main():
                   flush=True)
             break
         fast_wheel(-SCROLL_NOTCHES, gcx, gcy)
-        time.sleep(0.55)
+        time.sleep(SCROLL_SETTLE)    # 等回弹动画停稳，下一屏的页哈希/行检测才可信
 
     for _ in range(len(consumers)):
         q.put(None)
