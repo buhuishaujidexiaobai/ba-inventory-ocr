@@ -83,6 +83,7 @@ BASE_ROW_SPACING = 205.0
 _NUM_PART = r"(\d[\d,]*)(?:\.(\d+)([KkMm])|([KkMm]))?"
 BADGE_RE = re.compile(r"[xX×]\s*" + _NUM_PART)      # 角标一定带 x/X 前缀
 COUNT_RE = re.compile(r"[xX×]?\s*" + _NUM_PART)     # 面板持有数量行可不带前缀
+SCHOOL_RE = re.compile(r"[（(]([^（）()]{1,8})[）)]")  # 名称横幅中的学校后缀（（三一）/（狂獵）等）
 
 
 def scaled_value(m):
@@ -290,9 +291,9 @@ def parse_wide(lines):
     """(text, height) 行列表 → (名称, 数量)。
     名称 = 行高最大的 CJK 行（名称横幅字体最大，标签/描述/主能力值被高度过滤；
     长度 >20 或含句号的行视为物品描述文本，直接排除——道具名不会这么长）。
-    名称横幅过长会换行：学校后缀（如（三一））单独成行，须拼回主名——
-    高級技術筆記（三一） 与 高級技術筆記（千年） 是不同物品，丢了后缀无法区分；
-    反之若抓到的主名是学校行本身（（狂）等），则回找相邻的主名行拼合。
+    名称横幅过长会换行：学校后缀（如（三一））的捕获形态有三种——独立成行、
+    与持有數量同行（（三一）持有數量x159）、或并入主名（高級技術筆記（三一）），
+    三种都要把学校提取出来拼回主名——高級技術筆記（三一） 与 （千年） 是不同物品。
     数量 = 最后一个独立数字行（支持 10K/1.2K/1M 缩写）。"""
     texts = [t for t, _h in lines]
 
@@ -313,14 +314,21 @@ def parse_wide(lines):
             continue                     # 学校后缀行不当主名
         if base_ok(text) and h > best_h:
             name, best_h, name_idx = text, h, idx
-    if name:
-        nxt = texts[name_idx + 1] if name_idx + 1 < len(lines) else None
-        if nxt and is_school(nxt):
-            name += nxt                  # 拼回换行的学校后缀
-        elif is_school(name):
-            prev = texts[name_idx - 1] if name_idx > 0 else None
-            if base_ok(prev) and not is_school(prev):
-                name = prev + name       # 误抓到学校行：回找相邻的主名行
+
+    # 学校后缀提取：主名自带 > 横幅内独立行 > 与持有數量合并的行（自上而下首个命中）
+    count_idx = -1
+    for idx in range(len(lines) - 1, -1, -1):
+        if COUNT_RE.fullmatch(texts[idx]):
+            count_idx = idx
+            break
+    school = None
+    for t in texts[:count_idx if count_idx > 0 else len(texts)]:
+        m = SCHOOL_RE.search(t)
+        if m:
+            school = m.group(1)
+            break
+    if name and school and f"（{school}）" not in name and f"({school})" not in name:
+        name += f"（{school}）"
 
     count = None
     for text in reversed(texts):
@@ -483,6 +491,9 @@ def main():
                         lines.append((it[1].strip(), int(max(ys) - min(ys))))
             return [x for x in lines if x[0]]
 
+        debug_strip = os.environ.get("BA_DEBUG_STRIP")
+        debug_dumped = [0]
+
         while True:
             job = q.get()
             if job is None:
@@ -491,7 +502,16 @@ def main():
             strip_png, cell_key = job
             name = count = None
             try:
-                name, count = parse_wide(ocr_png(strip_png))
+                lines = ocr_png(strip_png)
+                if debug_strip and debug_dumped[0] < 3:
+                    debug_dumped[0] += 1
+                    os.makedirs(os.path.join(TEMP, "_strip_debug"), exist_ok=True)
+                    base = os.path.join(TEMP, "_strip_debug", f"strip{debug_dumped[0]}")
+                    with open(base + ".png", "wb") as f:
+                        f.write(strip_png)
+                    with open(base + ".txt", "w", encoding="utf-8") as f:
+                        f.write(repr(lines))
+                name, count = parse_wide(lines)
             except Exception as exc:
                 print(f"  [consumer] parse error: {exc!r}", flush=True)
             with rows_lock:
@@ -621,9 +641,11 @@ def main():
                 clicked += 1
             else:
                 skipped += 1
+        uncovered = sum(1 for v in ledger.values() if v["state"] not in ("dup", "valid", "giveup"))
         mode = "verify" if same_page else "sweep "
         print(f"screen {screen} [{mode}]: rows_detected={len(row_ys)} badges={len(badges)} "
-              f"new_strips={clicked} dup={skipped} ({time.time()-t0:.1f}s) rows={len(rows)}",
+              f"new_strips={clicked} dup={skipped} uncovered={uncovered} "
+              f"({time.time()-t0:.1f}s) rows={len(rows)}",
               flush=True)
         save_rows()
 
@@ -662,6 +684,14 @@ def main():
             if quiet >= 3:
                 print(f"bottom reached (fallback: no new rows x{quiet}, rows={len(rows)})",
                       flush=True)
+                stuck = {k: v for k, v in ledger.items()
+                         if v["state"] not in ("dup", "valid", "giveup")}
+                if stuck:
+                    print("── 未覆盖的台账条目（覆盖率终止被它们卡住）──", flush=True)
+                    for k, v in sorted(stuck.items(), key=lambda kv: str(kv[0])):
+                        where = f"probe col{k[1]}" if k[0] == "p" else f"row{k[0]} col{k[1]}"
+                        print(f"  {where} state={v['state']} attempts={v['attempts']}",
+                              flush=True)
                 break
         if not badges:
             empty_screens += 1
