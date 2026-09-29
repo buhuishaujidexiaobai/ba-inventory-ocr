@@ -126,29 +126,23 @@ def main():
     # TW 服译名与 CN 差异大（女武神 vs 瓦尔基丽），仅靠 CN 名 + 模糊匹配会串行。
     norm_names = {}
     raw_name = {}
-    norm_owner = Counter()           # 同名塌缩检测：norm 名 → 收录物品数（活动点数×23 等）
+    norm_owners = {}                 # norm 名 → 收录它的不同物品集合（同名塌缩检测）
     with open(TW_ITEMS_JSON, encoding="utf-8") as f:
         items_tw = json.load(f)
     with open(TW_EQUIP_JSON, encoding="utf-8") as f:
         equip_tw = json.load(f)
-    for iid, v in items_tw.items():
-        nn = norm(v["Name"])
-        norm_names.setdefault(nn, ("item", iid))
-        norm_owner[nn] += 1
-    for iid, v in equip_tw.items():
-        nn = norm(v["Name"])
-        norm_names.setdefault(nn, ("equipment", iid))
-        norm_owner[nn] += 1
-    for iid, v in items.items():
-        nn = norm(v["Name"])
-        norm_names.setdefault(nn, ("item", iid))
-        norm_owner[nn] += 1
-        raw_name[("item", iid)] = v["Name"]
-    for iid, v in equip.items():
-        nn = norm(v["Name"])
-        norm_names.setdefault(nn, ("equipment", iid))
-        norm_owner[nn] += 1
-        raw_name[("equipment", iid)] = v["Name"]
+    for src, kind in ((items_tw, "item"), (equip_tw, "equipment"),
+                      (items, "item"), (equip, "equipment")):
+        for iid, v in src.items():
+            nn = norm(v["Name"])
+            norm_names.setdefault(nn, (kind, iid))
+            norm_owners.setdefault(nn, set()).add((kind, iid))
+            if kind == "item":
+                raw_name[("item", iid)] = v["Name"]
+            else:
+                raw_name[("equipment", iid)] = v["Name"]
+    # 同物品的 TW 名与 CN 名 norm 后通常相同——按"不同物品数"计数，而非按名次数
+    norm_owner = {nn: len(s) for nn, s in norm_owners.items()}
 
     # 图标对齐链接（ba_icon_linker.py 产出，可选）：格子图标比对 SchaleDB 图标库
     # 得到的 名称→Id 直连，专治名字误读到认不出的行。仅自动应用高置信（score≥0.8）。
@@ -174,6 +168,11 @@ def main():
             continue
         # 学生神名文字 / 选择券-箱 家族：CN 名称体系与 TW 不同，纯名称匹配会串线 → 单列复核
         if ("的神名文字" in n or "神名文字" in n or "选择" in n or "選擇" in n):
+            ambiguous.append((name, count))
+            continue
+        # 纯学校行（（百鬼夜行）等）：名称行 OCR 失败时只抓到学校，无档位信息，
+        # 同一学校的 4 个档位都可能是它的主人——进人工复核，绝不模糊匹配
+        if re.fullmatch(r"[（(][^（）()]{1,8}[）)]", n):
             ambiguous.append((name, count))
             continue
         # 归属存疑行：禁止模糊匹配吞并，进人工复核
