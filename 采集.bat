@@ -15,9 +15,17 @@ if exist "venv\Scripts\python.exe" set PY_CMD=venv\Scripts\python.exe
 if exist "local_python_path.txt" set /p PY_CMD=<local_python_path.txt
 
 "%PY_CMD%" -u ba_queue_collector.py
+if errorlevel 1 goto failed
 echo.
 echo ============================================
 echo  采集完成！导入文件已生成在「输出」文件夹（已自动打开），
 echo  直接导入什亭之匣即可；如需不重扫重新生成，运行「2-生成什亭之匣导入文件.bat」。
 echo ============================================
+echo  3 秒后自动关闭本窗口...
+timeout /t 3 /nobreak >nul
+exit /b 0
+
+:failed
+echo.
+echo  采集过程中出现错误，详情见上方提示与「采集日志.txt」。
 pause

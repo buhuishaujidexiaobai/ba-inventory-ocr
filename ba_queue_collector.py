@@ -733,6 +733,7 @@ def main():
         print(f"[警告] 自动生成导入文件失败（rows2.json 已保存，不受影响）: {exc!r}\n"
               f"可稍后双击 2-生成什亭之匣导入文件.bat 或运行 python ba_map_items.py 重试",
               flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
