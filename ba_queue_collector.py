@@ -13,6 +13,7 @@
 用法: python ba_queue_collector.py [--fresh]
   --fresh  忽略旧 rows2.json 重新扫描（旧文件自动备份）
 输出: rows2.json [[TW名称, 数量], ...]（与 ba_map_items.py 兼容，跨页累积）
+      扫描结束后自动调用 ba_map_items 生成 输出\什亭之匣库存导入_OCR采集.json
 日志: 采集日志.txt（控制台输出同步落盘）
 """
 import argparse
@@ -721,6 +722,17 @@ def main():
         t.join(timeout=120)
     save_rows()
     print(f"done: {len(rows)} rows", flush=True)
+
+    # ===== 扫完直接生成导入文件（rows2 已落盘，就地调用映射器，报告同样进日志）=====
+    try:
+        import ba_map_items
+        ba_map_items.main()
+        print(f"导入文件已生成: {ba_map_items.OUT}", flush=True)
+        os.startfile(os.path.dirname(ba_map_items.OUT))   # 自动打开输出文件夹
+    except Exception as exc:
+        print(f"[警告] 自动生成导入文件失败（rows2.json 已保存，不受影响）: {exc!r}\n"
+              f"可稍后双击 2-生成什亭之匣导入文件.bat 或运行 python ba_map_items.py 重试",
+              flush=True)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ if exist "local_python_path.txt" set /p PY_CMD=<local_python_path.txt
 "%PY_CMD%" -u ba_queue_collector.py
 echo.
 echo ============================================
-echo  采集完成！下一步：
-echo  请双击运行「2-生成什亭之匣导入文件.bat」生成最终导入文件！
+echo  采集完成！导入文件已生成在「输出」文件夹（已自动打开），
+echo  直接导入什亭之匣即可；如需不重扫重新生成，运行「2-生成什亭之匣导入文件.bat」。
 echo ============================================
 pause
